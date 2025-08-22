@@ -28,8 +28,8 @@ steps:
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
-      - '--set-env-vars'
-      - 'DISCORD_WEBHOOK_URL=${_DISCORD_WEBHOOK_URL}'
+      - '--update-secrets'
+      - 'DISCORD_WEBHOOK_URL=discord-webhook-url:latest'
       - '--set-env-vars'
       - 'IBIND_USE_OAUTH=true'
       - '--set-env-vars'
@@ -51,9 +51,7 @@ steps:
       - '--set-env-vars'
       - 'IBIND_OAUTH1A_REALM=limited_poa'
 
-# Substitutions for build variables
-substitutions:
-  _DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/1408322306819756062/NjbdYcIDxV4D814pIJCcP1xvuDwKz-AiB1Kp_WrGzqzVMXSYLQC7M-ApwBTFKmhJU1DL'
+# No longer using substitutions - Discord webhook now stored in Secret Manager
 
 options:
   logging: CLOUD_LOGGING_ONLY

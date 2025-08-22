@@ -8,7 +8,7 @@
 // Configuration - Update these values for your deployment
 const CONFIG = {
   // Your Cloud Run service URL
-  SERVICE_URL: 'https://ibkr-trading-bot-gl6tvkxsha-uc.a.run.app',
+  SERVICE_URL: 'https://ibind-trading-bot-595069466316.us-central1.run.app',
   
   // Optional: API key for authentication (if you add API key auth to your service)
   API_KEY: '', // Leave empty if not using API key authentication
