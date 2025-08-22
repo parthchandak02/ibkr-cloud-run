@@ -268,3 +268,157 @@ function testCalendarParser() {
     console.log(`"${event}" -> ${JSON.stringify(result)}`);
   });
 }
+
+/**
+ * Calendar Trigger Setup Functions
+ * Run installTradingTriggers() once to set up automatic calendar-driven trading
+ */
+
+/**
+ * Install all required triggers for calendar-driven trading
+ */
+function installTradingTriggers() {
+  try {
+    console.log('🔧 Installing trading triggers...');
+    
+    // Remove any existing triggers first
+    removeExistingTriggers();
+    
+    // Install calendar event trigger
+    const calendarTrigger = ScriptApp.newTrigger('onCalendarEventUpdated')
+      .forUserCalendar(Session.getActiveUser().getEmail())
+      .onEventUpdated()
+      .create();
+    
+    // Install time-based trigger (checks every minute for upcoming events)
+    const timeTrigger = ScriptApp.newTrigger('checkUpcomingTradingEvents')
+      .timeBased()
+      .everyMinutes(1)
+      .create();
+    
+    console.log('✅ Trading triggers installed successfully!');
+    console.log(`📅 Calendar trigger ID: ${calendarTrigger.getUniqueId()}`);
+    console.log(`⏰ Time trigger ID: ${timeTrigger.getUniqueId()}`);
+    
+    return {
+      calendarTriggerId: calendarTrigger.getUniqueId(),
+      timeTriggerId: timeTrigger.getUniqueId(),
+      status: 'success'
+    };
+    
+  } catch (error) {
+    console.error('❌ Failed to install triggers:', error);
+    throw error;
+  }
+}
+
+/**
+ * Calendar event updated trigger handler
+ */
+function onCalendarEventUpdated(e) {
+  try {
+    console.log('📅 Calendar event updated trigger fired');
+    
+    // Get recent events that might contain trading instructions
+    const events = getRecentTradingEvents();
+    
+    events.forEach(event => {
+      const title = event.getTitle();
+      const description = event.getDescription();
+      
+      console.log(`🔍 Checking event: "${title}"`);
+      
+      // Parse and execute if it contains trading instructions
+      const tradeDetails = parseTradeFromCalendarEvent(title, description);
+      if (tradeDetails) {
+        console.log(`📊 Found trading event: ${JSON.stringify(tradeDetails)}`);
+        executeTrade(tradeDetails.symbol, tradeDetails.action, tradeDetails.quantity);
+      }
+    });
+    
+  } catch (error) {
+    console.error('💥 Calendar event trigger error:', error);
+  }
+}
+
+/**
+ * Time-based trigger handler
+ */
+function checkUpcomingTradingEvents() {
+  try {
+    console.log('⏰ Checking for upcoming trading events...');
+    
+    // Look for events starting in the next 2 minutes
+    const now = new Date();
+    const soon = new Date(now.getTime() + 2 * 60 * 1000);
+    
+    const calendar = CalendarApp.getDefaultCalendar();
+    const upcomingEvents = calendar.getEvents(now, soon);
+    
+    upcomingEvents.forEach(event => {
+      const title = event.getTitle();
+      const description = event.getDescription();
+      const startTime = event.getStartTime();
+      
+      const tradeDetails = parseTradeFromCalendarEvent(title, description);
+      if (tradeDetails) {
+        console.log(`📈 Executing scheduled trade: ${title} at ${startTime}`);
+        executeTrade(tradeDetails.symbol, tradeDetails.action, tradeDetails.quantity);
+      }
+    });
+    
+  } catch (error) {
+    console.error('💥 Time-based trigger error:', error);
+  }
+}
+
+/**
+ * Get recent calendar events that might contain trading instructions
+ */
+function getRecentTradingEvents() {
+  const calendar = CalendarApp.getDefaultCalendar();
+  const now = new Date();
+  const past = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const future = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  
+  const events = calendar.getEvents(past, future);
+  
+  return events.filter(event => {
+    const text = `${event.getTitle()} ${event.getDescription()}`.toUpperCase();
+    return text.includes('BUY') || text.includes('SELL') || text.includes('TRADE');
+  });
+}
+
+/**
+ * Remove existing triggers to avoid duplicates
+ */
+function removeExistingTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  
+  triggers.forEach(trigger => {
+    const handlerFunction = trigger.getHandlerFunction();
+    if (handlerFunction === 'onCalendarEventUpdated' || 
+        handlerFunction === 'checkUpcomingTradingEvents') {
+      ScriptApp.deleteTrigger(trigger);
+      console.log(`🗑️ Removed existing trigger: ${handlerFunction}`);
+    }
+  });
+}
+
+/**
+ * List all current triggers
+ */
+function listCurrentTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  
+  console.log('📋 Current triggers:');
+  triggers.forEach(trigger => {
+    const type = trigger.getTriggerSource();
+    const handler = trigger.getHandlerFunction();
+    const id = trigger.getUniqueId();
+    
+    console.log(`  - ${handler} (${type}) - ID: ${id}`);
+  });
+  
+  return triggers;
+}
