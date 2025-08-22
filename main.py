@@ -7,8 +7,10 @@ from datetime import datetime, UTC
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from ibind import IbkrClient, ibind_logs_initialize, StockQuery
+from ibind import IbkrClient, ibind_logs_initialize, StockQuery, QuestionType
 from ibind.oauth.oauth1a import OAuth1aConfig
+from ibind.client.ibkr_utils import OrderRequest
+import datetime
 from typing import Optional
 
 # Disable SSL warnings for development (fix Discord webhook SSL issue)
@@ -129,6 +131,72 @@ def lookup_stock_conid(symbol: str):
     except Exception as e:
         print(f"❌ Error looking up {symbol}: {e}")
         return None
+
+def place_ibkr_order(symbol: str, action: str, quantity: int, conid):
+    """Place an actual order using ibind library following best practices"""
+    client = get_ibkr_client()
+    if not client:
+        return {"success": False, "error": "IBKR client not available"}
+    
+    try:
+        # Extract the actual conid value (it comes as dict like {'1211': 46652429})
+        if isinstance(conid, dict):
+            conid_value = next(iter(conid.values()))
+        else:
+            conid_value = conid
+        
+        # Create order request using proper ibind OrderRequest
+        order_tag = f'ibind_bot_{symbol}_{datetime.datetime.now().strftime("%Y%m%d%H%M%S")}'
+        
+        order_request = OrderRequest(
+            conid=str(conid_value),
+            side=action,  # 'BUY' or 'SELL'
+            quantity=quantity,
+            order_type='MKT',  # Market order for immediate execution
+            acct_id=client.account_id,
+            coid=order_tag
+        )
+        
+        # Set up answers for common IBKR prompts
+        answers = {
+            QuestionType.PRICE_PERCENTAGE_CONSTRAINT: True,  # Accept price constraints
+            QuestionType.ORDER_VALUE_LIMIT: True,          # Accept value limits
+            QuestionType.MISSING_MARKET_DATA: True,        # Proceed without market data
+            'Unforeseen new question': True,               # Accept unknown questions
+        }
+        
+        print(f"📤 Placing order: {action} {quantity} shares of {symbol} (conid: {conid_value})")
+        
+        # Place the order using ibind
+        response = client.place_order(order_request, answers, client.account_id)
+        
+        if response and hasattr(response, 'data') and response.data:
+            result = response.data
+            print(f"📋 Order response: {result}")
+            
+            # Check if order was successful
+            if isinstance(result, list) and len(result) > 0:
+                order_response = result[0] if isinstance(result[0], dict) else {}
+                
+                # Look for success indicators
+                if order_response.get('success') or 'order_id' in order_response:
+                    return {
+                        "success": True,
+                        "order_id": order_response.get('order_id', order_tag),
+                        "response": result
+                    }
+                else:
+                    # Check for error messages
+                    error_msg = order_response.get('message', 'Unknown order error')
+                    return {"success": False, "error": f"Order rejected: {error_msg}"}
+            else:
+                return {"success": False, "error": f"Unexpected response format: {result}"}
+        else:
+            return {"success": False, "error": "No response from IBKR"}
+            
+    except Exception as e:
+        print(f"❌ Order placement error: {e}")
+        return {"success": False, "error": str(e)}
 
 def send_discord_notification(message: str, status: str = "info"):
     """Send notification to Discord webhook"""
@@ -339,11 +407,33 @@ async def execute_trade(trade_request: TradeRequest):
                 "timestamp": datetime.now(UTC)
             }
         
-        # TODO: Implement actual IBKR trading logic here
-        message = f"❌ Live trading not yet implemented. Set DRY_RUN=true for testing."
-        send_discord_notification(message, "warning")
+        # Execute actual IBKR trade using proper ibind methods
+        if not conid:
+            error_msg = f"❌ Cannot place order: No contract found for {symbol}"
+            send_discord_notification(error_msg, "error")
+            raise HTTPException(status_code=400, detail=error_msg)
         
-        raise HTTPException(status_code=501, detail="Live trading not yet implemented")
+        # Place the actual order using ibind
+        order_result = place_ibkr_order(symbol, action, quantity, conid)
+        
+        if order_result["success"]:
+            message = f"✅ LIVE ORDER PLACED: {action} {quantity} shares of {symbol} (Order ID: {order_result.get('order_id', 'N/A')})"
+            send_discord_notification(message, "success")
+            
+            return {
+                "status": "executed",
+                "message": message,
+                "symbol": symbol,
+                "action": action,
+                "quantity": quantity,
+                "conid": conid,
+                "order_id": order_result.get("order_id"),
+                "timestamp": datetime.now(UTC)
+            }
+        else:
+            error_msg = f"❌ Order failed: {order_result.get('error', 'Unknown error')}"
+            send_discord_notification(error_msg, "error")
+            raise HTTPException(status_code=500, detail=error_msg)
         
     except HTTPException:
         raise
