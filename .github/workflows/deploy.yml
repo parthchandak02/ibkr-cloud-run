@@ -1,0 +1,86 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: ibkr-trading-bot
+  REGION: us-central1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+    
+    - name: Install dependencies
+      run: |
+        uv venv
+        uv pip install -r requirements.txt
+    
+    - name: Run basic syntax check
+      run: |
+        source .venv/bin/activate
+        python -m py_compile main.py
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure gcloud
+      run: |
+        gcloud config set project $PROJECT_ID
+
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy $SERVICE_NAME \
+          --source . \
+          --region $REGION \
+          --allow-unauthenticated \
+          --set-env-vars IBIND_USE_OAUTH=true \
+          --set-env-vars DEFAULT_QUANTITY=1 \
+          --set-env-vars DRY_RUN=true \
+          --set-env-vars IBIND_OAUTH1A_REALM=limited_poa \
+          --update-secrets IBIND_OAUTH1A_ACCESS_TOKEN=ibind-access-token:latest \
+          --update-secrets IBIND_OAUTH1A_ACCESS_TOKEN_SECRET=ibind-access-token-secret:latest \
+          --update-secrets IBIND_OAUTH1A_CONSUMER_KEY=ibind-consumer-key:latest \
+          --update-secrets IBIND_OAUTH1A_DH_PRIME=ibind-dh-prime:latest \
+          --update-secrets IBIND_OAUTH1A_ENCRYPTION_KEY_FP=ibind-encryption-key:latest \
+          --update-secrets IBIND_OAUTH1A_SIGNATURE_KEY_FP=ibind-signature-key:latest \
+          --update-secrets DISCORD_WEBHOOK_URL=discord-webhook-url:latest \
+          --quiet
+
+    - name: Test deployment
+      run: |
+        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format="value(status.url)")
+        echo "Testing health endpoint: $SERVICE_URL/health"
+        curl -f "$SERVICE_URL/health" || exit 1
+        echo "✅ Deployment test passed!"

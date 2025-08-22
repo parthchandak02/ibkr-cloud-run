@@ -1,0 +1,59 @@
+# Google Cloud Build configuration for automated deployment
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/ibind-trading-bot:$SHORT_SHA'
+      - '.'
+  
+  # Push the image to Google Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/ibind-trading-bot:$SHORT_SHA'
+  
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'ibind-trading-bot'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/ibind-trading-bot:$SHORT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'DISCORD_WEBHOOK_URL=${_DISCORD_WEBHOOK_URL}'
+      - '--set-env-vars'
+      - 'IBIND_USE_OAUTH=true'
+      - '--set-env-vars'
+      - 'DEFAULT_QUANTITY=1'
+      - '--set-env-vars'
+      - 'DRY_RUN=true'
+      - '--update-secrets'
+      - 'IBIND_OAUTH1A_ACCESS_TOKEN=ibind-access-token:latest'
+      - '--update-secrets'
+      - 'IBIND_OAUTH1A_ACCESS_TOKEN_SECRET=ibind-access-token-secret:latest'
+      - '--update-secrets'
+      - 'IBIND_OAUTH1A_CONSUMER_KEY=ibind-consumer-key:latest'
+      - '--update-secrets'
+      - 'IBIND_OAUTH1A_DH_PRIME=ibind-dh-prime:latest'
+      - '--update-secrets'
+      - 'IBIND_OAUTH1A_ENCRYPTION_KEY_FP=ibind-encryption-key:latest'
+      - '--update-secrets'
+      - 'IBIND_OAUTH1A_SIGNATURE_KEY_FP=ibind-signature-key:latest'
+      - '--set-env-vars'
+      - 'IBIND_OAUTH1A_REALM=limited_poa'
+
+# Substitutions for build variables
+substitutions:
+  _DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/1408322306819756062/NjbdYcIDxV4D814pIJCcP1xvuDwKz-AiB1Kp_WrGzqzVMXSYLQC7M-ApwBTFKmhJU1DL'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
