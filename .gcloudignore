@@ -1,0 +1,32 @@
+# Ignore local development files
+.env
+config.env
+live_trading_oauth_files/
+test_oauth.py
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE files
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+secrets-management-plan.md
+
+# OS files
+.DS_Store
+Thumbs.db

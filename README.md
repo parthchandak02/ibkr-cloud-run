@@ -1,188 +1,142 @@
-# IBKR Trading Bot
+# 🤖 IBKR Calendar Trading Bot
 
-A production-ready trading bot for Interactive Brokers using the [Voyz ibind](https://github.com/Voyz/ibind) library. Supports OAuth 1.0a authentication and can be deployed to Google Cloud Run with calendar-triggered trades.
+A production-ready, open-source trading bot for Interactive Brokers that executes trades automatically based on Google Calendar events. Built with the [Voyz ibind](https://github.com/Voyz/ibind) library and deployed on Google Cloud Run.
 
 ## 🚀 Features
 
-- **FastAPI** web service with REST API
-- **Interactive Brokers** integration via Voyz ibind
-- **OAuth 1.0a authentication** for secure IBKR access
-- **Google Cloud Run** deployment ready
-- **Discord notifications** for trade alerts
-- **Calendar-triggered trades** via Google Apps Script
-- **Docker containerization** with optimized builds using `uv`
-- **Comprehensive health checks** and monitoring
-
-## 📋 Prerequisites
-
-- Interactive Brokers account with Client Portal API access
-- Google Cloud Platform account
-- Discord webhook (optional, for notifications)
-- Python 3.12+ (for local development)
+- **📅 Calendar-Driven Trading** - Create calendar events like "BUY 1 BYD" and trades execute automatically
+- **🔐 OAuth 1.0a Authentication** - Secure IBKR API access using proper authentication
+- **☁️ Cloud-Native** - Deploys to Google Cloud Run with auto-scaling
+- **📱 Smart Notifications** - Discord webhooks and email alerts for all trades
+- **🛡️ Safety First** - Dry-run mode for testing, comprehensive error handling
+- **⚡ Real-Time** - Dual trigger system (immediate + scheduled execution)
+- **🔧 Production Ready** - Proper secret management, monitoring, and logging
 
 ## 🏗️ Architecture
 
 ```
-Calendar Event → Google Apps Script → Cloud Run → IBKR API → Discord Notification
+Google Calendar → Apps Script → Cloud Run → IBKR API → Notifications
+     ↓              ↓            ↓          ↓           ↓
+"BUY 1 BYD"    → Triggers  → FastAPI → ibind → Discord/Email
 ```
 
-- **Trigger**: Google Calendar events
-- **Processor**: FastAPI service on Cloud Run
-- **Broker**: Interactive Brokers via ibind
-- **Notifications**: Discord webhooks
+## 📋 Prerequisites
 
-## 🔧 Local Development Setup
+- **Interactive Brokers Account** with Client Portal API access
+- **Google Cloud Platform** account (free tier works)
+- **Google Apps Script** access
+- **Discord Webhook** (optional, for notifications)
 
-### 1. Clone and Setup
+## ⚡ Quick Start
+
+### 1. **Clone & Setup**
 
 ```bash
-git clone https://github.com/parthchandak02/ibkr-cloud-run.git
-cd ibkr-cloud-run
+git clone https://github.com/your-username/ibkr-calendar-trading-bot.git
+cd ibkr-calendar-trading-bot
 
-# Create virtual environment using uv (recommended)
-uv venv
-source .venv/bin/activate
-
-# Install dependencies
-uv pip install -r requirements.txt
+# Create your local config
+cp config.env.template config.env
+# Edit config.env with your credentials (see setup guide below)
 ```
 
-### 2. Configure Environment
+### 2. **Get IBKR OAuth Credentials**
 
-Create a `config.env` file with your credentials:
+Follow the [IBKR OAuth Setup Guide](https://ibkrcampus.com/ibkr-api-page/cpapi-v1/#oauth-setup) to get:
+- Access Token
+- Access Token Secret  
+- Consumer Key
+- DH Prime
+- Private Keys (encryption.pem, signature.pem)
 
-```env
-# Discord Webhook for notifications
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_URL
-
-# IBKR OAuth 1.0a Configuration
-IBIND_USE_OAUTH=true
-IBIND_OAUTH1A_ACCESS_TOKEN=your_access_token
-IBIND_OAUTH1A_ACCESS_TOKEN_SECRET=your_access_token_secret
-IBIND_OAUTH1A_CONSUMER_KEY=your_consumer_key
-IBIND_OAUTH1A_DH_PRIME=your_dh_prime
-IBIND_OAUTH1A_ENCRYPTION_KEY_FP=/path/to/private_encryption.pem
-IBIND_OAUTH1A_SIGNATURE_KEY_FP=/path/to/private_signature.pem
-IBIND_OAUTH1A_REALM=limited_poa
-
-# Trading settings
-DEFAULT_QUANTITY=1
-DRY_RUN=true
-```
-
-### 3. Run Locally
+### 3. **Deploy to Google Cloud**
 
 ```bash
-python main.py
+# Enable required services
+gcloud services enable cloudbuild.googleapis.com run.googleapis.com secretmanager.googleapis.com
+
+# Create secrets (replace with your actual values)
+echo "YOUR_ACCESS_TOKEN" | gcloud secrets create ibind-access-token --data-file=-
+echo "YOUR_ACCESS_TOKEN_SECRET" | gcloud secrets create ibind-access-token-secret --data-file=-
+echo "YOUR_CONSUMER_KEY" | gcloud secrets create ibind-consumer-key --data-file=-
+echo "YOUR_DH_PRIME" | gcloud secrets create ibind-dh-prime --data-file=-
+
+# Store PEM files (base64 encoded)
+base64 -i private_encryption.pem | gcloud secrets create ibind-encryption-key --data-file=-
+base64 -i private_signature.pem | gcloud secrets create ibind-signature-key --data-file=-
+
+# Optional: Discord webhook
+echo "YOUR_DISCORD_WEBHOOK_URL" | gcloud secrets create discord-webhook-url --data-file=-
+
+# Deploy using our script
+./scripts/deploy.sh
 ```
 
-The service will be available at `http://localhost:8000`
-
-- Health check: `GET /health`
-- API docs: `GET /docs`
-- Place trade: `POST /trade`
-
-## ☁️ Cloud Deployment
-
-### Prerequisites
-
-1. **Google Cloud Setup**:
-   ```bash
-   # Install Google Cloud CLI
-   # https://cloud.google.com/sdk/docs/install
-   
-   # Authenticate
-   gcloud auth login
-   gcloud config set project YOUR_PROJECT_ID
-   
-   # Enable required APIs
-   gcloud services enable cloudbuild.googleapis.com run.googleapis.com secretmanager.googleapis.com
-   ```
-
-2. **Store Secrets in Secret Manager**:
-   ```bash
-   # Store IBKR credentials
-   echo "your_access_token" | gcloud secrets create ibind-access-token --data-file=-
-   echo "your_access_token_secret" | gcloud secrets create ibind-access-token-secret --data-file=-
-   echo "your_consumer_key" | gcloud secrets create ibind-consumer-key --data-file=-
-   echo "your_dh_prime" | gcloud secrets create ibind-dh-prime --data-file=-
-   
-   # Store PEM files (base64 encoded)
-   base64 -i private_encryption.pem | gcloud secrets create ibind-encryption-key --data-file=-
-   base64 -i private_signature.pem | gcloud secrets create ibind-signature-key --data-file=-
-   
-   # Store Discord webhook
-   echo "your_discord_webhook_url" | gcloud secrets create discord-webhook-url --data-file=-
-   ```
-
-3. **Grant Permissions**:
-   ```bash
-   # Grant Cloud Run service account access to secrets
-   gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-     --member="serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
-     --role="roles/secretmanager.secretAccessor"
-   ```
-
-### Deploy to Cloud Run
+### 4. **Setup Google Apps Script**
 
 ```bash
-gcloud run deploy ibkr-trading-bot \
-  --source . \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --set-env-vars IBIND_USE_OAUTH=true \
-  --set-env-vars DEFAULT_QUANTITY=1 \
-  --set-env-vars DRY_RUN=true \
-  --set-env-vars IBIND_OAUTH1A_REALM=limited_poa \
-  --update-secrets IBIND_OAUTH1A_ACCESS_TOKEN=ibind-access-token:latest \
-  --update-secrets IBIND_OAUTH1A_ACCESS_TOKEN_SECRET=ibind-access-token-secret:latest \
-  --update-secrets IBIND_OAUTH1A_CONSUMER_KEY=ibind-consumer-key:latest \
-  --update-secrets IBIND_OAUTH1A_DH_PRIME=ibind-dh-prime:latest \
-  --update-secrets IBIND_OAUTH1A_ENCRYPTION_KEY_FP=ibind-encryption-key:latest \
-  --update-secrets IBIND_OAUTH1A_SIGNATURE_KEY_FP=ibind-signature-key:latest \
-  --update-secrets DISCORD_WEBHOOK_URL=discord-webhook-url:latest
+# Deploy the Apps Script
+cd google-apps-script
+npm install -g @google/clasp
+clasp login
+clasp create --title "IBKR Trading Bot" --type standalone
+clasp push
+
+# Set up calendar triggers (run in Apps Script editor)
+installTradingTriggers()
 ```
 
-## 📅 Calendar Integration
+### 5. **Test the System**
 
-### Google Apps Script Setup
+1. **Create a calendar event**: "BUY 1 BYD"
+2. **Watch it execute automatically**
+3. **Check Discord/email for notifications**
 
-1. **Create Apps Script Project**:
-   - Go to [Google Apps Script](https://script.google.com/)
-   - Create new project
+## 📚 Detailed Documentation
 
-2. **Add Code**:
-   ```javascript
-   function onCalendarEvent() {
-     const response = UrlFetchApp.fetch('https://your-service.run.app/trade', {
-       method: 'POST',
-       headers: {
-         'Content-Type': 'application/json',
-         'X-API-Key': 'your-api-key'  // Optional: for authentication
-       },
-       payload: JSON.stringify({
-         symbol: 'BYD',
-         action: 'BUY',
-         quantity: 1
-       })
-     });
-     
-     console.log('Trade response:', response.getContentText());
-   }
-   ```
+- **[📖 Complete Setup Guide](docs/DEPLOYMENT.md)** - Step-by-step deployment
+- **[📅 Calendar Triggers Guide](docs/CALENDAR_TRIGGERS_GUIDE.md)** - Calendar automation setup
+- **[🚀 Live Trading Setup](docs/LIVE_TRADING_SETUP.md)** - Enable real trading
+- **[🔧 Google Apps Script Guide](google-apps-script/README.md)** - Apps Script configuration
 
-3. **Set Up Trigger**:
-   - Click the clock icon in Apps Script
-   - Add time-driven trigger or calendar event trigger
+## 🎯 Supported Calendar Event Formats
 
-## 🔒 Security
+Your system recognizes these calendar event patterns:
 
-- **OAuth 1.0a**: Secure IBKR authentication
-- **Google Secret Manager**: Encrypted credential storage
-- **HTTPS**: All communications encrypted
-- **IAM**: Fine-grained access control
+```
+✅ "BUY 1 BYD"           → Buy 1 share of BYD
+✅ "SELL 5 AAPL"         → Sell 5 shares of AAPL  
+✅ "Trade: BUY 10 TSLA"  → Buy 10 shares of TSLA
+✅ "AAPL BUY 3"          → Buy 3 shares of AAPL
+✅ "Just BUY"            → Buy 1 share of default symbol
 
-## 📊 API Reference
+❌ "Random meeting"      → Ignored (no trading keywords)
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+
+| Variable | Description | Required | Example |
+|----------|-------------|----------|---------|
+| `IBIND_USE_OAUTH` | Enable OAuth authentication | Yes | `true` |
+| `IBIND_OAUTH1A_ACCESS_TOKEN` | IBKR access token | Yes | `your_token` |
+| `IBIND_OAUTH1A_ACCESS_TOKEN_SECRET` | IBKR access token secret | Yes | `your_secret` |
+| `IBIND_OAUTH1A_CONSUMER_KEY` | IBKR consumer key | Yes | `your_key` |
+| `IBIND_OAUTH1A_DH_PRIME` | IBKR DH prime | Yes | `your_prime` |
+| `DISCORD_WEBHOOK_URL` | Discord webhook for notifications | No | `https://discord.com/...` |
+| `DEFAULT_QUANTITY` | Default trade quantity | No | `1` |
+| `DRY_RUN` | Enable dry run mode | No | `true` |
+
+## 🛡️ Security Features
+
+- **🔐 Secret Management** - All credentials stored in Google Secret Manager
+- **🚫 No Hardcoded Secrets** - Template-based configuration
+- **🛡️ OAuth Authentication** - Secure IBKR API access
+- **📝 Audit Logging** - Complete trade and error logging
+- **🧪 Dry Run Mode** - Test safely before live trading
+
+## 📊 API Endpoints
 
 ### Health Check
 ```http
@@ -193,28 +147,26 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "timestamp": "2025-01-01T00:00:00Z",
-  "discord_configured": true,
-  "ibkr_configured": true,
-  "ibkr_status": "connected (1 accounts)"
+  "services": {
+    "discord": {"status": "configured"},
+    "ibkr": {"status": "initialized", "message": "OAuth client ready"}
+  }
 }
 ```
 
-### Place Trade
+### Execute Trade
 ```http
 POST /trade
-```
+Content-Type: application/json
 
-**Request:**
-```json
 {
   "symbol": "BYD",
-  "action": "BUY",
+  "action": "BUY", 
   "quantity": 1
 }
 ```
 
-**Response:**
+**Response (Dry Run):**
 ```json
 {
   "status": "simulated",
@@ -222,47 +174,83 @@ POST /trade
   "symbol": "BYD",
   "action": "BUY",
   "quantity": 1,
-  "conid": {"1211": 46652429},
-  "timestamp": "2025-01-01T00:00:00Z"
+  "conid": {"1211": 46652429}
 }
 ```
+
+**Response (Live Trading):**
+```json
+{
+  "status": "executed",
+  "message": "✅ LIVE ORDER PLACED: BUY 1 shares of BYD",
+  "order_id": "ibind_bot_BYD_20250122142530"
+}
+```
+
+## 🚀 Going Live
+
+To enable real trading (disable dry run):
+
+```bash
+gcloud run services update ibkr-trading-bot \
+  --region us-central1 \
+  --set-env-vars DRY_RUN=false
+```
+
+⚠️ **Start with small quantities and test thoroughly!**
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **IBKR Connection Failed**: Check OAuth credentials and ensure Client Portal API is enabled
-2. **Discord Notifications Not Working**: Verify webhook URL and network connectivity
-3. **BYD Symbol Not Found**: Ensure IBKR client is properly initialized and account has HK market access
+1. **"IBKR status: failed"**
+   - Check OAuth credentials in Secret Manager
+   - Verify IBKR Client Portal API is enabled
+   - Ensure account has market data permissions
 
-### Logs
+2. **"Discord notifications not working"**
+   - Verify webhook URL is correct
+   - Check Discord server permissions
+
+3. **"Calendar triggers not firing"**
+   - Verify triggers are installed in Apps Script
+   - Check Apps Script execution permissions
+   - Review execution logs in Apps Script
+
+### View Logs
 
 ```bash
-# View Cloud Run logs
+# Cloud Run logs
 gcloud run services logs read ibkr-trading-bot --region=us-central1 --limit=50
 
-# Local debugging
-python main.py  # Check console output
+# Apps Script logs
+# Check execution log in Apps Script editor
 ```
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## 📄 License
 
-This project is for educational purposes. Please ensure compliance with Interactive Brokers terms of service and relevant financial regulations.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## ⚠️ Disclaimer
 
-This software is for educational and research purposes only. Trading involves risk, and you should never trade with money you cannot afford to lose. The authors are not responsible for any financial losses.
+This software is for educational and research purposes. Trading involves risk, and you should never trade with money you cannot afford to lose. The authors are not responsible for any financial losses.
+
+Always test thoroughly in dry-run mode before enabling live trading.
 
 ## 🙏 Acknowledgments
 
 - [Voyz ibind](https://github.com/Voyz/ibind) - Excellent IBKR API wrapper
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
+- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework  
 - [Google Cloud Run](https://cloud.google.com/run) - Serverless container platform
+
+---
+
+**🎉 Ready to automate your trading with calendar events? Follow the [setup guide](docs/DEPLOYMENT.md) to get started!**
