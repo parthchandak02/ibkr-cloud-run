@@ -195,7 +195,7 @@ async def execute_trade(trade_request: TradeRequest):
     try:
         symbol = trade_request.symbol.upper()
         action = trade_request.action.upper()
-        quantity = trade_request.quantity or int(os.getenv("DEFAULT_QUANTITY", 100))
+        quantity = trade_request.quantity or int(os.getenv("DEFAULT_QUANTITY", 1))
         dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
         
         # Validate action
