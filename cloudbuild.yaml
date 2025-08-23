@@ -30,6 +30,8 @@ steps:
       - '--allow-unauthenticated'
       - '--update-secrets'
       - 'DISCORD_WEBHOOK_URL=discord-webhook-url:latest'
+      - '--update-secrets'
+      - 'TRADING_BOT_API_KEY=trading-bot-api-key:latest'
       - '--set-env-vars'
       - 'IBIND_USE_OAUTH=true'
       - '--set-env-vars'

@@ -8,10 +8,10 @@
 // Configuration - Update these values for your deployment
 const CONFIG = {
   // Your Cloud Run service URL
-  SERVICE_URL: 'https://ibkr-trading-bot-gl6tvkxsha-uc.a.run.app',
+  SERVICE_URL: 'https://ibkr-trading-bot-595069466316.us-central1.run.app',
   
-  // Optional: API key for authentication (if you add API key auth to your service)
-  API_KEY: '', // Leave empty if not using API key authentication
+  // Optional: API key for authentication (stored securely in Script Properties)
+  API_KEY: '', // This will be loaded from Script Properties - DO NOT put the actual key here
   
   // Default trading settings
   DEFAULT_SYMBOL: 'BYD',
@@ -22,6 +22,27 @@ const CONFIG = {
   SEND_EMAIL_NOTIFICATIONS: true,
   EMAIL_RECIPIENT: 'your-email@example.com' // Update with your email
 };
+
+/**
+ * Get API key from secure Script Properties
+ * This keeps the key out of the code and git repository
+ */
+function getSecureApiKey() {
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    const apiKey = properties.getProperty('TRADING_BOT_API_KEY');
+    
+    if (!apiKey) {
+      console.log('⚠️ No API key found in Script Properties. Service calls will be unauthenticated.');
+      return '';
+    }
+    
+    return apiKey;
+  } catch (error) {
+    console.error('❌ Failed to retrieve API key from Script Properties:', error);
+    return '';
+  }
+}
 
 /**
  * Main function to execute trades (single or multiple)
@@ -93,9 +114,13 @@ function executeTradeRequest(endpoint, requestPayload) {
     'Content-Type': 'application/json'
   };
   
-  // Add API key if configured
-  if (CONFIG.API_KEY) {
-    headers['X-API-Key'] = CONFIG.API_KEY;
+  // Add API key from secure storage
+  const apiKey = getSecureApiKey();
+  if (apiKey) {
+    headers['X-API-Key'] = apiKey;
+    console.log('🔐 Using secure API key for authentication');
+  } else {
+    console.log('⚠️ No API key - request will be unauthenticated');
   }
   
   // Make the API call to Cloud Run

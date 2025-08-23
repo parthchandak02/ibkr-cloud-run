@@ -4,7 +4,7 @@ import urllib3
 import base64
 import tempfile
 from datetime import datetime, UTC
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from ibind import IbkrClient, ibind_logs_initialize, StockQuery, QuestionType
@@ -69,6 +69,31 @@ def get_env_var_clean(var_name: str):
     """Get environment variable and strip any whitespace/newlines"""
     value = os.getenv(var_name)
     return value.strip() if value else None
+
+def validate_api_key(x_api_key: str = Header(None)):
+    """Validate API key for secure endpoints"""
+    # Get the expected API key from environment
+    expected_api_key = get_env_var_clean('TRADING_BOT_API_KEY')
+    
+    # If no API key is configured, allow unauthenticated access (for testing)
+    if not expected_api_key:
+        print("⚠️ No API key configured - allowing unauthenticated access")
+        return True
+    
+    # If API key is configured, require it
+    if not x_api_key:
+        raise HTTPException(
+            status_code=401, 
+            detail="API key required. Please provide X-API-Key header."
+        )
+    
+    if x_api_key != expected_api_key:
+        raise HTTPException(
+            status_code=403, 
+            detail="Invalid API key"
+        )
+    
+    return True
 
 def get_ibkr_client():
     """Get or create IBKR client with OAuth 1.0a following ibind best practices"""
@@ -571,7 +596,7 @@ def test_ibkr_connection():
             }
 
 @app.post("/trade")
-async def execute_trade(trade_request: TradeRequest):
+async def execute_trade(trade_request: TradeRequest, _: bool = Depends(validate_api_key)):
     """Execute a single trade order"""
     try:
         symbol = trade_request.symbol.upper()
@@ -649,7 +674,7 @@ async def execute_trade(trade_request: TradeRequest):
         raise HTTPException(status_code=500, detail=error_msg)
 
 @app.post("/multi-trade")
-async def execute_multiple_trades(request: MultiTradeRequest):
+async def execute_multiple_trades(request: MultiTradeRequest, _: bool = Depends(validate_api_key)):
     """Execute multiple trades from a single request (e.g., from calendar event)"""
     try:
         # Parse multiple trades from the text
