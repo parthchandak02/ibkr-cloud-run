@@ -4,7 +4,7 @@ import urllib3
 import base64
 import tempfile
 from datetime import datetime, UTC
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from ibind import IbkrClient, ibind_logs_initialize, StockQuery, QuestionType
@@ -12,6 +12,7 @@ from ibind.oauth.oauth1a import OAuth1aConfig
 from ibind.client.ibkr_utils import OrderRequest
 import datetime
 from typing import Optional
+from dateutil import parser as date_parser
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import json
@@ -257,6 +258,242 @@ def get_calendar_service():
         print(f"Failed to initialize Calendar API service: {e}")
         return None
 
+def setup_calendar_webhook_subscription():
+    """Set up Google Calendar webhook subscription to receive push notifications"""
+    try:
+        service = get_calendar_service()
+        if not service:
+            print("❌ Calendar service not available")
+            return None
+        
+        # Generate a unique channel ID
+        import uuid
+        channel_id = f"trading-bot-{uuid.uuid4()}"
+        
+        # Get the webhook URL (Cloud Run URL + webhook endpoint)
+        webhook_url = os.getenv('WEBHOOK_BASE_URL', 'https://ibkr-trading-bot-595069466316.us-central1.run.app')
+        webhook_endpoint = f"{webhook_url}/webhook/calendar"
+        
+        # Optional webhook token for security
+        webhook_token = get_env_var_clean('GOOGLE_CALENDAR_WEBHOOK_TOKEN')
+        
+        # Create the watch request
+        watch_request = {
+            "id": channel_id,
+            "type": "web_hook",
+            "address": webhook_endpoint,
+        }
+        
+        # Add optional token for security
+        if webhook_token:
+            watch_request["token"] = webhook_token
+        
+        # Set expiration (max 24 hours from now)
+        from datetime import timedelta
+        expiration_time = datetime.now(UTC) + timedelta(hours=23)  # 23 hours to be safe
+        watch_request["expiration"] = str(int(expiration_time.timestamp() * 1000))  # milliseconds
+        
+        print(f"🔔 Setting up calendar webhook subscription:")
+        print(f"  Channel ID: {channel_id}")
+        print(f"  Webhook URL: {webhook_endpoint}")
+        print(f"  Expiration: {expiration_time}")
+        
+        # Subscribe to calendar events
+        response = service.events().watch(
+            calendarId='primary',
+            body=watch_request
+        ).execute()
+        
+        print(f"✅ Calendar webhook subscription created:")
+        print(f"  Resource ID: {response.get('resourceId')}")
+        print(f"  Expiration: {response.get('expiration')}")
+        
+        return {
+            "channel_id": channel_id,
+            "resource_id": response.get('resourceId'),
+            "expiration": response.get('expiration'),
+            "webhook_url": webhook_endpoint
+        }
+        
+    except Exception as e:
+        print(f"❌ Failed to set up calendar webhook subscription: {e}")
+        return None
+
+async def process_calendar_change(resource_id: str):
+    """Process a calendar change notification by fetching recent events and checking for trades"""
+    try:
+        service = get_calendar_service()
+        if not service:
+            print("❌ Calendar service not available")
+            return {"status": "error", "message": "Calendar service not available"}
+        
+        # Get recent events (last 10 minutes to catch new/updated events)
+        from datetime import timedelta
+        now = datetime.now(UTC)
+        time_min = (now - timedelta(minutes=10)).isoformat()
+        time_max = (now + timedelta(minutes=60)).isoformat()  # Also check upcoming events
+        
+        print(f"🔍 Fetching calendar events from {time_min} to {time_max}")
+        
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        print(f"📅 Found {len(events)} events in time range")
+        
+        processed_events = 0
+        
+        for event in events:
+            event_id = event.get('id')
+            event_title = event.get('summary', '')
+            event_description = event.get('description', '')
+            start_time = event.get('start', {}).get('dateTime')
+            
+            if not start_time:
+                continue  # Skip all-day events
+            
+            # Parse start time
+            event_start = date_parser.parse(start_time)
+            
+            # Only process events that are starting soon (within 5 minutes) or just started
+            time_diff = (event_start - now).total_seconds() / 60  # minutes
+            
+            if time_diff > 5 or time_diff < -5:  # Skip events too far in future or past
+                continue
+            
+            # Check if already executed (prevent duplicate processing)
+            if 'TRADE EXECUTION RECORD' in event_description:
+                print(f"⏭️ Event '{event_title}' already executed, skipping")
+                continue
+            
+            # Parse the event for trading instructions
+            full_text = f"{event_title} {event_description}".strip()
+            trades = parse_calendar_event_for_trades(full_text)
+            
+            if not trades:
+                print(f"⏭️ No trading instructions found in event: '{event_title}'")
+                continue
+            
+            print(f"🚀 Processing trading event: '{event_title}' (ID: {event_id})")
+            
+            # Execute the trades
+            if len(trades) == 1:
+                # Single trade
+                trade = trades[0]
+                await execute_single_trade_from_webhook(
+                    trade['symbol'], trade['action'], trade['quantity'],
+                    event_id, event_title
+                )
+            else:
+                # Multiple trades
+                await execute_multiple_trades_from_webhook(
+                    trades, event_id, event_title
+                )
+            
+            processed_events += 1
+        
+        return {
+            "status": "success",
+            "message": f"Processed {processed_events} trading events",
+            "events_checked": len(events),
+            "events_processed": processed_events
+        }
+        
+    except Exception as e:
+        print(f"❌ Error processing calendar change: {e}")
+        return {"status": "error", "message": str(e)}
+
+def parse_calendar_event_for_trades(text: str):
+    """Parse calendar event text for trading instructions (reuse existing logic)"""
+    # Check if it contains trading keywords
+    text_upper = text.upper()
+    if not any(keyword in text_upper for keyword in ['BUY', 'SELL']):
+        return []
+    
+    # Check if it's multiple trades
+    trade_keywords = text_upper.count('BUY') + text_upper.count('SELL')
+    if trade_keywords > 1 or any(sep in text for sep in [',', ';', '\n']):
+        # Multiple trades
+        return parse_multiple_trades(text)
+    else:
+        # Single trade - parse manually
+        import re
+        match = re.search(r'(BUY|SELL)\s+(?:(\d+)\s+)?([A-Z]{1,5})', text_upper)
+        if match:
+            return [{
+                "symbol": match.group(3),
+                "action": match.group(1),
+                "quantity": int(match.group(2)) if match.group(2) else 1
+            }]
+        return []
+
+async def execute_single_trade_from_webhook(symbol: str, action: str, quantity: int, event_id: str, event_title: str):
+    """Execute a single trade triggered by webhook"""
+    try:
+        # Create trade request
+        trade_request = TradeRequest(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            calendar_event_id=event_id,
+            calendar_event_title=event_title
+        )
+        
+        # Execute the trade (reuse existing logic)
+        result = await execute_trade(trade_request, validate_api_key())
+        print(f"✅ Webhook trade executed: {result}")
+        
+    except Exception as e:
+        print(f"❌ Webhook trade execution failed: {e}")
+        send_discord_notification(f"❌ Webhook trade failed: {e}", "error")
+
+async def execute_multiple_trades_from_webhook(trades: list, event_id: str, event_title: str):
+    """Execute multiple trades triggered by webhook"""
+    try:
+        # Create multi-trade request
+        trades_text = ", ".join([f"{t['action']} {t['quantity']} {t['symbol']}" for t in trades])
+        
+        multi_trade_request = MultiTradeRequest(
+            trades_text=trades_text,
+            calendar_event_id=event_id,
+            calendar_event_title=event_title
+        )
+        
+        # Execute the trades (reuse existing logic)
+        result = await execute_multiple_trades(multi_trade_request, validate_api_key())
+        print(f"✅ Webhook multi-trade executed: {result}")
+        
+    except Exception as e:
+        print(f"❌ Webhook multi-trade execution failed: {e}")
+        send_discord_notification(f"❌ Webhook multi-trade failed: {e}", "error")
+
+def stop_calendar_webhook_subscription(channel_id: str, resource_id: str):
+    """Stop a calendar webhook subscription"""
+    try:
+        service = get_calendar_service()
+        if not service:
+            print("❌ Calendar service not available")
+            return False
+        
+        # Stop the channel
+        stop_request = {
+            "id": channel_id,
+            "resourceId": resource_id
+        }
+        
+        service.channels().stop(body=stop_request).execute()
+        print(f"✅ Stopped calendar webhook subscription: {channel_id}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Failed to stop calendar webhook subscription: {e}")
+        return False
+
 def update_calendar_event_after_execution(event_id: str, event_title: str, trade_results: list, is_multi_trade: bool = False):
     """Update calendar event description with execution status
     
@@ -456,6 +693,124 @@ def send_discord_notification(message: str, status: str = "info"):
 @app.get("/")
 async def root():
     return {"message": "IBKR Trading Bot is running!", "timestamp": datetime.now(UTC)}
+
+def verify_webhook_token(channel_token: str = None):
+    """Verify webhook token for security (optional but recommended)"""
+    expected_token = get_env_var_clean('GOOGLE_CALENDAR_WEBHOOK_TOKEN')
+    
+    # If no token is configured, skip verification
+    if not expected_token:
+        print("⚠️ No webhook token configured - skipping verification")
+        return True
+    
+    # If token is configured, verify it matches
+    if not channel_token:
+        print("❌ Webhook token required but not provided")
+        return False
+    
+    if channel_token != expected_token:
+        print("❌ Invalid webhook token")
+        return False
+    
+    print("✅ Webhook token verified")
+    return True
+
+@app.post("/webhook/calendar")
+async def calendar_webhook(
+    request: Request,
+    x_goog_channel_id: str = Header(None),
+    x_goog_resource_id: str = Header(None),
+    x_goog_resource_state: str = Header(None),
+    x_goog_message_number: str = Header(None),
+    x_goog_channel_expiration: str = Header(None),
+    x_goog_channel_token: str = Header(None),
+):
+    """
+    Google Calendar webhook endpoint for receiving push notifications
+    
+    This endpoint receives notifications when calendar events are created, updated, or deleted.
+    It processes the notifications and triggers trades based on event content.
+    
+    Security: Uses optional webhook token verification and validates required headers.
+    """
+    try:
+        # Log the incoming webhook for debugging
+        print(f"📅 Calendar webhook received:")
+        print(f"  Channel ID: {x_goog_channel_id}")
+        print(f"  Resource ID: {x_goog_resource_id}")
+        print(f"  Resource State: {x_goog_resource_state}")
+        print(f"  Message Number: {x_goog_message_number}")
+        print(f"  Channel Expiration: {x_goog_channel_expiration}")
+        
+        # Verify webhook token for security
+        if not verify_webhook_token(x_goog_channel_token):
+            raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
+        
+        # Get request body (usually empty for calendar webhooks)
+        body = await request.body()
+        if body:
+            print(f"  Body: {body.decode('utf-8')}")
+        
+        # Validate required headers
+        if not x_goog_channel_id or not x_goog_resource_id:
+            print("❌ Missing required webhook headers")
+            raise HTTPException(status_code=400, detail="Missing required webhook headers")
+        
+        # Handle different resource states
+        if x_goog_resource_state == "sync":
+            # Initial sync notification - acknowledge but don't process
+            print("🔄 Sync notification received - acknowledging")
+            return {"status": "sync_acknowledged"}
+        
+        elif x_goog_resource_state == "exists":
+            # Calendar event was created or updated
+            print("📝 Calendar event change detected")
+            
+            # Process the calendar change
+            result = await process_calendar_change(x_goog_resource_id)
+            return result
+        
+        elif x_goog_resource_state == "not_exists":
+            # Calendar event was deleted
+            print("🗑️ Calendar event deleted - no action needed")
+            return {"status": "event_deleted"}
+        
+        else:
+            print(f"⚠️ Unknown resource state: {x_goog_resource_state}")
+            return {"status": "unknown_state", "state": x_goog_resource_state}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Webhook processing error: {e}")
+        # Return 200 to prevent Google from retrying
+        return {"status": "error", "message": str(e)}
+
+@app.post("/webhook/setup")
+async def setup_webhook(_: bool = Depends(validate_api_key)):
+    """Set up Google Calendar webhook subscription"""
+    result = setup_calendar_webhook_subscription()
+    if result:
+        return {
+            "status": "success",
+            "message": "Calendar webhook subscription created",
+            "subscription": result
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Failed to set up webhook subscription")
+
+@app.post("/webhook/stop")
+async def stop_webhook(
+    channel_id: str,
+    resource_id: str,
+    _: bool = Depends(validate_api_key)
+):
+    """Stop a Google Calendar webhook subscription"""
+    success = stop_calendar_webhook_subscription(channel_id, resource_id)
+    if success:
+        return {"status": "success", "message": "Webhook subscription stopped"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to stop webhook subscription")
 
 @app.get("/health")
 async def health_check():

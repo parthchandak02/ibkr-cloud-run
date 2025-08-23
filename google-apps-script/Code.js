@@ -357,34 +357,35 @@ function testCalendarParser() {
  */
 
 /**
- * Install all required triggers for calendar-driven trading
+ * Install event-driven triggers for calendar-based trading
+ * This approach is much more efficient than polling every few minutes
  */
-function installTradingTriggers() {
+function installEventDrivenTriggers() {
   try {
-    console.log('🔧 Installing trading triggers...');
+    console.log('🔧 Installing event-driven trading triggers...');
     
     // Remove any existing triggers first
     removeExistingTriggers();
     
-    // Install calendar event trigger
+    // Install calendar event trigger (fires when events are created/updated)
     const calendarTrigger = ScriptApp.newTrigger('onCalendarEventUpdated')
       .forUserCalendar(Session.getActiveUser().getEmail())
       .onEventUpdated()
       .create();
     
-    // Install time-based trigger (checks every 5 minutes for upcoming events)
-    const timeTrigger = ScriptApp.newTrigger('checkUpcomingTradingEvents')
+    // Install a minimal backup trigger (every 30 minutes, just as safety net)
+    const backupTrigger = ScriptApp.newTrigger('checkImmediatelyUpcomingEvents')
       .timeBased()
-      .everyMinutes(5)
+      .everyMinutes(30)
       .create();
     
-    console.log('✅ Trading triggers installed successfully!');
+    console.log('✅ Event-driven triggers installed successfully!');
     console.log(`📅 Calendar trigger ID: ${calendarTrigger.getUniqueId()}`);
-    console.log(`⏰ Time trigger ID: ${timeTrigger.getUniqueId()}`);
+    console.log(`🛡️ Backup trigger ID: ${backupTrigger.getUniqueId()}`);
     
     return {
       calendarTriggerId: calendarTrigger.getUniqueId(),
-      timeTriggerId: timeTrigger.getUniqueId(),
+      backupTriggerId: backupTrigger.getUniqueId(),
       status: 'success'
     };
     
@@ -392,6 +393,13 @@ function installTradingTriggers() {
     console.error('❌ Failed to install triggers:', error);
     throw error;
   }
+}
+
+/**
+ * Legacy function for backward compatibility
+ */
+function installTradingTriggers() {
+  return installEventDrivenTriggers();
 }
 
 /**
@@ -437,12 +445,14 @@ function checkUpcomingTradingEvents() {
   try {
     console.log('⏰ Checking for upcoming trading events...');
     
-    // Look for events starting in the next 2 minutes (not ongoing events)
+    // Look for events starting in the next 2 minutes (not ongoing or past events)
     const now = new Date();
     const soon = new Date(now.getTime() + 2 * 60 * 1000);
     
     const calendar = CalendarApp.getDefaultCalendar();
     const upcomingEvents = calendar.getEvents(now, soon);
+    
+    console.log(`🔍 Found ${upcomingEvents.length} events in the next 2 minutes`);
     
     upcomingEvents.forEach(event => {
       const title = event.getTitle();
@@ -450,10 +460,19 @@ function checkUpcomingTradingEvents() {
       const startTime = event.getStartTime();
       const eventId = event.getId();
       
-      // Only process events that are actually starting soon (not ongoing)
+      // Only process events that are actually starting soon (not ongoing or past)
       const timeDiff = startTime.getTime() - now.getTime();
+      
+      // Skip events that are too far in the future (> 2 minutes)
       if (timeDiff > 2 * 60 * 1000) {
-        return; // Event is too far in the future
+        console.log(`⏭️ Event "${title}" is too far in future (${Math.round(timeDiff/60000)} minutes)`);
+        return;
+      }
+      
+      // Skip events that started more than 1 minute ago (past events)
+      if (timeDiff < -1 * 60 * 1000) {
+        console.log(`⏭️ Event "${title}" is in the past (${Math.round(-timeDiff/60000)} minutes ago)`);
+        return;
       }
       
       const tradeDetails = parseTradeFromCalendarEvent(title, description);
