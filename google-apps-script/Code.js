@@ -290,10 +290,10 @@ function installTradingTriggers() {
       .onEventUpdated()
       .create();
     
-    // Install time-based trigger (checks every minute for upcoming events)
+    // Install time-based trigger (checks every 5 minutes for upcoming events)
     const timeTrigger = ScriptApp.newTrigger('checkUpcomingTradingEvents')
       .timeBased()
-      .everyMinutes(1)
+      .everyMinutes(5)
       .create();
     
     console.log('✅ Trading triggers installed successfully!');
@@ -342,13 +342,13 @@ function onCalendarEventUpdated(e) {
 }
 
 /**
- * Time-based trigger handler
+ * Time-based trigger handler with duplicate prevention
  */
 function checkUpcomingTradingEvents() {
   try {
     console.log('⏰ Checking for upcoming trading events...');
     
-    // Look for events starting in the next 2 minutes
+    // Look for events starting in the next 2 minutes (not ongoing events)
     const now = new Date();
     const soon = new Date(now.getTime() + 2 * 60 * 1000);
     
@@ -359,10 +359,27 @@ function checkUpcomingTradingEvents() {
       const title = event.getTitle();
       const description = event.getDescription();
       const startTime = event.getStartTime();
+      const eventId = event.getId();
+      
+      // Only process events that are actually starting soon (not ongoing)
+      const timeDiff = startTime.getTime() - now.getTime();
+      if (timeDiff > 2 * 60 * 1000) {
+        return; // Event is too far in the future
+      }
       
       const tradeDetails = parseTradeFromCalendarEvent(title, description);
       if (tradeDetails) {
+        // Check if we've already executed this event
+        if (hasEventBeenExecuted(eventId)) {
+          console.log(`⏭️ Skipping already executed event: ${title}`);
+          return;
+        }
+        
         console.log(`📈 Executing scheduled trade: ${title} at ${startTime}`);
+        
+        // Mark event as executed BEFORE calling executeTrade
+        markEventAsExecuted(eventId, title);
+        
         executeTrade(tradeDetails.symbol, tradeDetails.action, tradeDetails.quantity);
       }
     });
@@ -421,4 +438,100 @@ function listCurrentTriggers() {
   });
   
   return triggers;
+}
+
+/**
+ * Execution tracking functions to prevent duplicate trades
+ */
+
+/**
+ * Check if an event has already been executed
+ */
+function hasEventBeenExecuted(eventId) {
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    const executedEvents = properties.getProperty('EXECUTED_EVENTS');
+    
+    if (!executedEvents) {
+      return false;
+    }
+    
+    const executedList = JSON.parse(executedEvents);
+    return executedList.includes(eventId);
+    
+  } catch (error) {
+    console.error('Error checking execution status:', error);
+    return false; // If we can't check, allow execution (fail safe)
+  }
+}
+
+/**
+ * Mark an event as executed
+ */
+function markEventAsExecuted(eventId, eventTitle) {
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    let executedEvents = properties.getProperty('EXECUTED_EVENTS');
+    
+    let executedList = [];
+    if (executedEvents) {
+      executedList = JSON.parse(executedEvents);
+    }
+    
+    // Add this event to the executed list
+    if (!executedList.includes(eventId)) {
+      executedList.push(eventId);
+      
+      // Keep only the last 100 executed events to prevent storage bloat
+      if (executedList.length > 100) {
+        executedList = executedList.slice(-100);
+      }
+      
+      properties.setProperty('EXECUTED_EVENTS', JSON.stringify(executedList));
+      console.log(`✅ Marked event as executed: ${eventTitle} (ID: ${eventId})`);
+    }
+    
+  } catch (error) {
+    console.error('Error marking event as executed:', error);
+  }
+}
+
+/**
+ * Clear execution history (for testing/cleanup)
+ */
+function clearExecutionHistory() {
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    properties.deleteProperty('EXECUTED_EVENTS');
+    console.log('🗑️ Execution history cleared');
+  } catch (error) {
+    console.error('Error clearing execution history:', error);
+  }
+}
+
+/**
+ * View execution history
+ */
+function viewExecutionHistory() {
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    const executedEvents = properties.getProperty('EXECUTED_EVENTS');
+    
+    if (!executedEvents) {
+      console.log('📋 No execution history found');
+      return [];
+    }
+    
+    const executedList = JSON.parse(executedEvents);
+    console.log(`📋 Execution history (${executedList.length} events):`);
+    executedList.forEach((eventId, index) => {
+      console.log(`  ${index + 1}. ${eventId}`);
+    });
+    
+    return executedList;
+    
+  } catch (error) {
+    console.error('Error viewing execution history:', error);
+    return [];
+  }
 }
