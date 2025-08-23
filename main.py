@@ -12,6 +12,9 @@ from ibind.oauth.oauth1a import OAuth1aConfig
 from ibind.client.ibkr_utils import OrderRequest
 import datetime
 from typing import Optional
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+import json
 
 # Disable SSL warnings for development (fix Discord webhook SSL issue)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -33,6 +36,13 @@ class TradeRequest(BaseModel):
     symbol: str
     action: str  # "BUY" or "SELL"
     quantity: Optional[int] = None
+    calendar_event_id: Optional[str] = None  # Google Calendar event ID
+    calendar_event_title: Optional[str] = None  # Original event title
+
+class MultiTradeRequest(BaseModel):
+    trades_text: str  # Text containing multiple trades to parse
+    calendar_event_id: Optional[str] = None  # Google Calendar event ID
+    calendar_event_title: Optional[str] = None  # Original event title
 
 # Initialize IBKR client (we'll test this step by step)
 ibkr_client = None
@@ -197,6 +207,193 @@ def place_ibkr_order(symbol: str, action: str, quantity: int, conid):
     except Exception as e:
         print(f"❌ Order placement error: {e}")
         return {"success": False, "error": str(e)}
+
+def get_calendar_service():
+    """Get Google Calendar API service using service account credentials"""
+    try:
+        # Try to get service account credentials from environment
+        service_account_info = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
+        if not service_account_info:
+            print("No Google service account credentials found")
+            return None
+        
+        # Parse the JSON credentials
+        credentials_dict = json.loads(service_account_info)
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=['https://www.googleapis.com/auth/calendar']
+        )
+        
+        # Build the Calendar API service
+        service = build('calendar', 'v3', credentials=credentials)
+        return service
+        
+    except Exception as e:
+        print(f"Failed to initialize Calendar API service: {e}")
+        return None
+
+def update_calendar_event_after_execution(event_id: str, event_title: str, trade_results: list, is_multi_trade: bool = False):
+    """Update calendar event description with execution status
+    
+    Args:
+        event_id: Google Calendar event ID
+        event_title: Original event title
+        trade_results: List of trade result dictionaries or single trade result dict
+        is_multi_trade: Whether this was a multi-trade execution
+    """
+    if not event_id:
+        print("No calendar event ID provided, skipping calendar update")
+        return
+    
+    try:
+        service = get_calendar_service()
+        if not service:
+            print("Calendar service not available, skipping calendar update")
+            return
+        
+        # Get the current event
+        event = service.events().get(calendarId='primary', eventId=event_id).execute()
+        
+        # Check if already executed (prevent double-marking)
+        current_description = event.get('description', '')
+        if 'TRADE EXECUTION RECORD' in current_description:
+            print(f"Event {event_id} already marked as executed, skipping update")
+            return
+        
+        # Handle single trade vs multiple trades
+        if not isinstance(trade_results, list):
+            trade_results = [trade_results]
+        
+        # Create execution status message
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        
+        # Determine overall status
+        all_executed = all(result.get('status') == 'executed' for result in trade_results)
+        all_simulated = all(result.get('status') == 'simulated' for result in trade_results)
+        any_failed = any(result.get('status') == 'failed' for result in trade_results)
+        
+        if all_executed:
+            status_emoji = "✅"
+            status_text = "LIVE EXECUTED"
+        elif all_simulated:
+            status_emoji = "🔍"
+            status_text = "DRY RUN COMPLETED"
+        elif any_failed:
+            status_emoji = "❌"
+            status_text = "PARTIALLY FAILED"
+        else:
+            status_emoji = "⚠️"
+            status_text = "MIXED RESULTS"
+        
+        # Create execution record
+        if is_multi_trade:
+            execution_record = f"""
+━━━ MULTI-TRADE EXECUTION RECORD ━━━
+{status_emoji} Overall Status: {status_text}
+📊 Trades Executed: {len(trade_results)}
+🕐 Executed: {timestamp}
+🤖 Executed by: IBKR Trading Bot
+
+📋 INDIVIDUAL TRADE RESULTS:
+"""
+            for i, result in enumerate(trade_results, 1):
+                trade_status = result.get('status', 'unknown')
+                trade_message = result.get('message', 'No message')
+                symbol = result.get('symbol', 'N/A')
+                action = result.get('action', 'N/A')
+                quantity = result.get('quantity', 'N/A')
+                
+                if trade_status == 'executed':
+                    trade_emoji = "✅"
+                elif trade_status == 'simulated':
+                    trade_emoji = "🔍"
+                else:
+                    trade_emoji = "❌"
+                
+                execution_record += f"""
+{i}. {trade_emoji} {action} {quantity} {symbol}
+   Result: {trade_message}
+"""
+            execution_record += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        else:
+            # Single trade
+            result = trade_results[0]
+            message = result.get('message', 'No message')
+            execution_record = f"""
+━━━ TRADE EXECUTION RECORD ━━━
+{status_emoji} Status: {status_text}
+📊 Result: {message}
+🕐 Executed: {timestamp}
+🤖 Executed by: IBKR Trading Bot
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        
+        # Prepend execution record to existing description
+        updated_description = execution_record + current_description
+        
+        # Update the event
+        event['description'] = updated_description
+        
+        # Also update the title to show execution status
+        original_title = event.get('summary', event_title)
+        if not original_title.startswith(status_emoji):
+            event['summary'] = f"{status_emoji} {original_title}"
+        
+        # Save the updated event
+        updated_event = service.events().update(
+            calendarId='primary',
+            eventId=event_id,
+            body=event
+        ).execute()
+        
+        print(f"✅ Calendar event updated: {event_id}")
+        print(f"📝 Title: {updated_event.get('summary')}")
+        
+    except Exception as e:
+        print(f"❌ Failed to update calendar event {event_id}: {e}")
+        # Don't fail the trade if calendar update fails
+
+def parse_multiple_trades(text: str):
+    """Parse multiple trades from calendar event title/description
+    
+    Supports formats like:
+    - BUY 10 TSLA, SELL 5 AAPL
+    - BUY 100 TSLA; SELL 50 BYD; BUY 25 NVDA
+    - Multi-line with different trades
+    """
+    import re
+    
+    # Clean up the text
+    text = text.upper().strip()
+    
+    # Split by common separators (comma, semicolon, newline)
+    trade_parts = re.split(r'[,;\n]+', text)
+    
+    trades = []
+    
+    for part in trade_parts:
+        part = part.strip()
+        if not part:
+            continue
+            
+        # Match pattern: ACTION QUANTITY SYMBOL
+        # Examples: "BUY 10 TSLA", "SELL 5 AAPL", "BUY NVDA" (quantity defaults to 1)
+        match = re.match(r'(BUY|SELL)\s+(?:(\d+)\s+)?([A-Z]{1,5})', part)
+        
+        if match:
+            action = match.group(1)
+            quantity = int(match.group(2)) if match.group(2) else 1
+            symbol = match.group(3)
+            
+            trades.append({
+                "symbol": symbol,
+                "action": action,
+                "quantity": quantity
+            })
+        else:
+            print(f"⚠️ Could not parse trade from: '{part}'")
+    
+    return trades
 
 def send_discord_notification(message: str, status: str = "info"):
     """Send notification to Discord webhook"""
@@ -375,7 +572,7 @@ def test_ibkr_connection():
 
 @app.post("/trade")
 async def execute_trade(trade_request: TradeRequest):
-    """Execute a trade order"""
+    """Execute a single trade order"""
     try:
         symbol = trade_request.symbol.upper()
         action = trade_request.action.upper()
@@ -389,56 +586,174 @@ async def execute_trade(trade_request: TradeRequest):
         # Look up the contract ID (conid) for the symbol
         conid = lookup_stock_conid(symbol)
         
+        trade_result = {
+            "symbol": symbol,
+            "action": action,
+            "quantity": quantity,
+            "conid": conid,
+            "timestamp": datetime.now(UTC)
+        }
+        
         if dry_run:
             if conid:
                 message = f"🔍 DRY RUN: Would {action} {quantity} shares of {symbol} (conid: {conid})"
+                trade_result["status"] = "simulated"
             else:
                 message = f"❌ DRY RUN FAILED: Could not find contract for {symbol}"
+                trade_result["status"] = "failed"
             
+            trade_result["message"] = message
             send_discord_notification(message, "info" if conid else "warning")
             
-            return {
-                "status": "simulated",
-                "message": message,
-                "symbol": symbol,
-                "action": action,
-                "quantity": quantity,
-                "conid": conid,
-                "timestamp": datetime.now(UTC)
-            }
-        
-        # Execute actual IBKR trade using proper ibind methods
-        if not conid:
-            error_msg = f"❌ Cannot place order: No contract found for {symbol}"
-            send_discord_notification(error_msg, "error")
-            raise HTTPException(status_code=400, detail=error_msg)
-        
-        # Place the actual order using ibind
-        order_result = place_ibkr_order(symbol, action, quantity, conid)
-        
-        if order_result["success"]:
-            message = f"✅ LIVE ORDER PLACED: {action} {quantity} shares of {symbol} (Order ID: {order_result.get('order_id', 'N/A')})"
-            send_discord_notification(message, "success")
-            
-            return {
-                "status": "executed",
-                "message": message,
-                "symbol": symbol,
-                "action": action,
-                "quantity": quantity,
-                "conid": conid,
-                "order_id": order_result.get("order_id"),
-                "timestamp": datetime.now(UTC)
-            }
         else:
-            error_msg = f"❌ Order failed: {order_result.get('error', 'Unknown error')}"
-            send_discord_notification(error_msg, "error")
-            raise HTTPException(status_code=500, detail=error_msg)
+            # Execute actual IBKR trade using proper ibind methods
+            if not conid:
+                error_msg = f"❌ Cannot place order: No contract found for {symbol}"
+                trade_result["status"] = "failed"
+                trade_result["message"] = error_msg
+                send_discord_notification(error_msg, "error")
+                raise HTTPException(status_code=400, detail=error_msg)
+            
+            # Place the actual order using ibind
+            order_result = place_ibkr_order(symbol, action, quantity, conid)
+            
+            if order_result["success"]:
+                message = f"✅ LIVE ORDER PLACED: {action} {quantity} shares of {symbol} (Order ID: {order_result.get('order_id', 'N/A')})"
+                trade_result["status"] = "executed"
+                trade_result["message"] = message
+                trade_result["order_id"] = order_result.get("order_id")
+                send_discord_notification(message, "success")
+            else:
+                error_msg = f"❌ Order failed: {order_result.get('error', 'Unknown error')}"
+                trade_result["status"] = "failed"
+                trade_result["message"] = error_msg
+                send_discord_notification(error_msg, "error")
+                raise HTTPException(status_code=500, detail=error_msg)
+        
+        # Update calendar event if provided
+        if trade_request.calendar_event_id:
+            update_calendar_event_after_execution(
+                trade_request.calendar_event_id,
+                trade_request.calendar_event_title or f"{action} {quantity} {symbol}",
+                trade_result,
+                is_multi_trade=False
+            )
+        
+        return trade_result
         
     except HTTPException:
         raise
     except Exception as e:
         error_msg = f"❌ Trade execution failed: {str(e)}"
+        send_discord_notification(error_msg, "error")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@app.post("/multi-trade")
+async def execute_multiple_trades(request: MultiTradeRequest):
+    """Execute multiple trades from a single request (e.g., from calendar event)"""
+    try:
+        # Parse multiple trades from the text
+        trades = parse_multiple_trades(request.trades_text)
+        
+        if not trades:
+            raise HTTPException(status_code=400, detail="No valid trades found in the provided text")
+        
+        print(f"🚀 Executing {len(trades)} trades from: {request.trades_text}")
+        
+        dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
+        trade_results = []
+        
+        # Execute each trade
+        for trade in trades:
+            symbol = trade["symbol"]
+            action = trade["action"]
+            quantity = trade["quantity"]
+            
+            print(f"📈 Processing: {action} {quantity} {symbol}")
+            
+            # Look up contract ID
+            conid = lookup_stock_conid(symbol)
+            
+            trade_result = {
+                "symbol": symbol,
+                "action": action,
+                "quantity": quantity,
+                "conid": conid,
+                "timestamp": datetime.now(UTC)
+            }
+            
+            if dry_run:
+                if conid:
+                    message = f"🔍 DRY RUN: Would {action} {quantity} shares of {symbol} (conid: {conid})"
+                    trade_result["status"] = "simulated"
+                else:
+                    message = f"❌ DRY RUN FAILED: Could not find contract for {symbol}"
+                    trade_result["status"] = "failed"
+                
+                trade_result["message"] = message
+                print(f"  📊 {message}")
+                
+            else:
+                # Execute actual trade
+                if not conid:
+                    message = f"❌ Cannot place order: No contract found for {symbol}"
+                    trade_result["status"] = "failed"
+                    trade_result["message"] = message
+                    print(f"  📊 {message}")
+                else:
+                    order_result = place_ibkr_order(symbol, action, quantity, conid)
+                    
+                    if order_result["success"]:
+                        message = f"✅ LIVE ORDER PLACED: {action} {quantity} shares of {symbol} (Order ID: {order_result.get('order_id', 'N/A')})"
+                        trade_result["status"] = "executed"
+                        trade_result["message"] = message
+                        trade_result["order_id"] = order_result.get("order_id")
+                        print(f"  📊 {message}")
+                    else:
+                        message = f"❌ Order failed: {order_result.get('error', 'Unknown error')}"
+                        trade_result["status"] = "failed"
+                        trade_result["message"] = message
+                        print(f"  📊 {message}")
+            
+            trade_results.append(trade_result)
+        
+        # Send Discord notification with summary
+        successful_trades = [r for r in trade_results if r["status"] in ["executed", "simulated"]]
+        failed_trades = [r for r in trade_results if r["status"] == "failed"]
+        
+        if dry_run:
+            summary = f"🔍 DRY RUN COMPLETED: {len(successful_trades)}/{len(trades)} trades would execute"
+        else:
+            summary = f"✅ MULTI-TRADE COMPLETED: {len(successful_trades)}/{len(trades)} trades executed successfully"
+        
+        if failed_trades:
+            summary += f" ({len(failed_trades)} failed)"
+        
+        send_discord_notification(summary, "success" if not failed_trades else "warning")
+        
+        # Update calendar event if provided
+        if request.calendar_event_id:
+            update_calendar_event_after_execution(
+                request.calendar_event_id,
+                request.calendar_event_title or request.trades_text,
+                trade_results,
+                is_multi_trade=True
+            )
+        
+        return {
+            "status": "completed",
+            "total_trades": len(trades),
+            "successful_trades": len(successful_trades),
+            "failed_trades": len(failed_trades),
+            "trades": trade_results,
+            "summary": summary,
+            "timestamp": datetime.now(UTC)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"❌ Multi-trade execution failed: {str(e)}"
         send_discord_notification(error_msg, "error")
         raise HTTPException(status_code=500, detail=error_msg)
 

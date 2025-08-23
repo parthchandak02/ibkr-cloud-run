@@ -24,66 +24,23 @@ const CONFIG = {
 };
 
 /**
- * Main function to execute a trade
+ * Main function to execute trades (single or multiple)
  * This can be called manually or triggered by calendar events
  */
-function executeTrade(symbol = CONFIG.DEFAULT_SYMBOL, action = CONFIG.DEFAULT_ACTION, quantity = CONFIG.DEFAULT_QUANTITY) {
+function executeTrade(symbol = CONFIG.DEFAULT_SYMBOL, action = CONFIG.DEFAULT_ACTION, quantity = CONFIG.DEFAULT_QUANTITY, eventId = null, eventTitle = null) {
   try {
     console.log(`🚀 Executing trade: ${action} ${quantity} shares of ${symbol}`);
     
-    // Prepare the trade request
+    // Prepare the trade request with calendar event information
     const tradeRequest = {
       symbol: symbol,
       action: action.toUpperCase(),
-      quantity: quantity
+      quantity: quantity,
+      calendar_event_id: eventId,
+      calendar_event_title: eventTitle
     };
     
-    // Prepare request headers
-    const headers = {
-      'Content-Type': 'application/json'
-    };
-    
-    // Add API key if configured
-    if (CONFIG.API_KEY) {
-      headers['X-API-Key'] = CONFIG.API_KEY;
-    }
-    
-    // Make the API call to Cloud Run
-    const response = UrlFetchApp.fetch(`${CONFIG.SERVICE_URL}/trade`, {
-      method: 'POST',
-      headers: headers,
-      payload: JSON.stringify(tradeRequest),
-      muteHttpExceptions: true // Don't throw on HTTP errors
-    });
-    
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-    
-    console.log(`📊 Response Code: ${responseCode}`);
-    console.log(`📋 Response: ${responseText}`);
-    
-    if (responseCode === 200) {
-      const result = JSON.parse(responseText);
-      const message = `✅ Trade executed successfully: ${result.message}`;
-      console.log(message);
-      
-      // Send email notification if enabled
-      if (CONFIG.SEND_EMAIL_NOTIFICATIONS) {
-        sendEmailNotification('Trade Executed Successfully', message, result);
-      }
-      
-      return result;
-    } else {
-      const errorMessage = `❌ Trade execution failed (${responseCode}): ${responseText}`;
-      console.error(errorMessage);
-      
-      // Send error notification
-      if (CONFIG.SEND_EMAIL_NOTIFICATIONS) {
-        sendEmailNotification('Trade Execution Failed', errorMessage);
-      }
-      
-      throw new Error(errorMessage);
-    }
+    return executeTradeRequest('/trade', tradeRequest);
     
   } catch (error) {
     const errorMessage = `💥 Error executing trade: ${error.message}`;
@@ -95,6 +52,88 @@ function executeTrade(symbol = CONFIG.DEFAULT_SYMBOL, action = CONFIG.DEFAULT_AC
     }
     
     throw error;
+  }
+}
+
+/**
+ * Execute multiple trades from a single request
+ */
+function executeMultiTrade(tradesText, eventId = null, eventTitle = null) {
+  try {
+    console.log(`🚀 Executing multiple trades from: ${tradesText}`);
+    
+    // Prepare the multi-trade request with calendar event information
+    const multiTradeRequest = {
+      trades_text: tradesText,
+      calendar_event_id: eventId,
+      calendar_event_title: eventTitle
+    };
+    
+    return executeTradeRequest('/multi-trade', multiTradeRequest);
+    
+  } catch (error) {
+    const errorMessage = `💥 Error executing multi-trade: ${error.message}`;
+    console.error(errorMessage);
+    
+    // Send error notification
+    if (CONFIG.SEND_EMAIL_NOTIFICATIONS) {
+      sendEmailNotification('Multi-Trade Script Error', errorMessage);
+    }
+    
+    throw error;
+  }
+}
+
+/**
+ * Common function to execute trade requests
+ */
+function executeTradeRequest(endpoint, requestPayload) {
+  // Prepare request headers
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+  
+  // Add API key if configured
+  if (CONFIG.API_KEY) {
+    headers['X-API-Key'] = CONFIG.API_KEY;
+  }
+  
+  // Make the API call to Cloud Run
+  const response = UrlFetchApp.fetch(`${CONFIG.SERVICE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: headers,
+    payload: JSON.stringify(requestPayload),
+    muteHttpExceptions: true // Don't throw on HTTP errors
+  });
+  
+  const responseCode = response.getResponseCode();
+  const responseText = response.getContentText();
+  
+  console.log(`📊 Response Code: ${responseCode}`);
+  console.log(`📋 Response: ${responseText}`);
+  
+  if (responseCode === 200) {
+    const result = JSON.parse(responseText);
+    const message = result.summary || result.message || `✅ Trade executed successfully`;
+    console.log(message);
+    
+    // Send email notification if enabled
+    if (CONFIG.SEND_EMAIL_NOTIFICATIONS) {
+      const subject = endpoint === '/multi-trade' ? 'Multi-Trade Executed' : 'Trade Executed Successfully';
+      sendEmailNotification(subject, message, result);
+    }
+    
+    return result;
+  } else {
+    const errorMessage = `❌ Trade execution failed (${responseCode}): ${responseText}`;
+    console.error(errorMessage);
+    
+    // Send error notification
+    if (CONFIG.SEND_EMAIL_NOTIFICATIONS) {
+      sendEmailNotification('Trade Execution Failed', errorMessage);
+    }
+    
+    throw new Error(errorMessage);
   }
 }
 
@@ -158,48 +197,66 @@ function onCalendarEvent(eventTitle, eventDescription = '') {
 
 /**
  * Parse trade instructions from calendar event title/description
- * Supports formats like:
- * - "BUY 5 AAPL"
- * - "SELL 10 BYD"
- * - "Trade: BUY 1 TSLA"
+ * Supports both single and multiple trades:
+ * - Single: "BUY 5 AAPL", "SELL 10 BYD"
+ * - Multiple: "BUY 10 TSLA, SELL 5 AAPL", "BUY 100 TSLA; SELL 50 BYD"
+ * - Multi-line: "BUY 100 TSLA\nSELL 50 BYD"
  */
 function parseTradeFromCalendarEvent(title, description = '') {
-  const text = `${title} ${description}`.toUpperCase();
+  const fullText = `${title} ${description}`.trim();
   
-  // Pattern to match: BUY/SELL [quantity] [symbol]
-  const tradePattern = /\b(BUY|SELL)\s+(\d+)\s+([A-Z]{1,5})\b/;
-  const match = text.match(tradePattern);
+  // Check if this contains multiple trades (commas, semicolons, or newlines)
+  const hasMultipleTrades = /[,;\n]/.test(fullText) && 
+                           (fullText.match(/(BUY|SELL)/gi) || []).length > 1;
   
-  if (match) {
+  if (hasMultipleTrades) {
+    // Return the full text for multi-trade parsing on the server
     return {
-      action: match[1],
-      quantity: parseInt(match[2]),
-      symbol: match[3]
+      isMultiTrade: true,
+      tradesText: fullText
     };
-  }
-  
-  // Alternative pattern: [symbol] BUY/SELL [quantity]
-  const altPattern = /\b([A-Z]{1,5})\s+(BUY|SELL)\s+(\d+)\b/;
-  const altMatch = text.match(altPattern);
-  
-  if (altMatch) {
-    return {
-      symbol: altMatch[1],
-      action: altMatch[2],
-      quantity: parseInt(altMatch[3])
-    };
-  }
-  
-  // Simple pattern: just BUY/SELL with default symbol and quantity
-  const simplePattern = /\b(BUY|SELL)\b/;
-  const simpleMatch = text.match(simplePattern);
-  
-  if (simpleMatch) {
-    return {
-      action: simpleMatch[1],
-      quantity: CONFIG.DEFAULT_QUANTITY,
-      symbol: CONFIG.DEFAULT_SYMBOL
-    };
+  } else {
+    // Single trade - parse it here for backward compatibility
+    const text = fullText.toUpperCase();
+    
+    // Pattern to match: BUY/SELL [quantity] [symbol]
+    const tradePattern = /\b(BUY|SELL)\s+(\d+)\s+([A-Z]{1,5})\b/;
+    const match = text.match(tradePattern);
+    
+    if (match) {
+      return {
+        isMultiTrade: false,
+        action: match[1],
+        quantity: parseInt(match[2]),
+        symbol: match[3]
+      };
+    }
+    
+    // Alternative pattern: [symbol] BUY/SELL [quantity]
+    const altPattern = /\b([A-Z]{1,5})\s+(BUY|SELL)\s+(\d+)\b/;
+    const altMatch = text.match(altPattern);
+    
+    if (altMatch) {
+      return {
+        isMultiTrade: false,
+        symbol: altMatch[1],
+        action: altMatch[2],
+        quantity: parseInt(altMatch[3])
+      };
+    }
+    
+    // Simple pattern: just BUY/SELL with default symbol and quantity
+    const simplePattern = /\b(BUY|SELL)\b/;
+    const simpleMatch = text.match(simplePattern);
+    
+    if (simpleMatch) {
+      return {
+        isMultiTrade: false,
+        action: simpleMatch[1],
+        quantity: CONFIG.DEFAULT_QUANTITY,
+        symbol: CONFIG.DEFAULT_SYMBOL
+      };
+    }
   }
   
   return null;
@@ -313,7 +370,7 @@ function installTradingTriggers() {
 }
 
 /**
- * Calendar event updated trigger handler
+ * Calendar event updated trigger handler with multi-trade support
  */
 function onCalendarEventUpdated(e) {
   try {
@@ -325,6 +382,7 @@ function onCalendarEventUpdated(e) {
     events.forEach(event => {
       const title = event.getTitle();
       const description = event.getDescription();
+      const eventId = event.getId();
       
       console.log(`🔍 Checking event: "${title}"`);
       
@@ -332,7 +390,13 @@ function onCalendarEventUpdated(e) {
       const tradeDetails = parseTradeFromCalendarEvent(title, description);
       if (tradeDetails) {
         console.log(`📊 Found trading event: ${JSON.stringify(tradeDetails)}`);
-        executeTrade(tradeDetails.symbol, tradeDetails.action, tradeDetails.quantity);
+        
+        // Execute based on trade type (single vs multiple)
+        if (tradeDetails.isMultiTrade) {
+          executeMultiTrade(tradeDetails.tradesText, eventId, title);
+        } else {
+          executeTrade(tradeDetails.symbol, tradeDetails.action, tradeDetails.quantity, eventId, title);
+        }
       }
     });
     
@@ -342,7 +406,7 @@ function onCalendarEventUpdated(e) {
 }
 
 /**
- * Time-based trigger handler with duplicate prevention
+ * Time-based trigger handler with duplicate prevention and multi-trade support
  */
 function checkUpcomingTradingEvents() {
   try {
@@ -380,7 +444,12 @@ function checkUpcomingTradingEvents() {
         // Mark event as executed BEFORE calling executeTrade
         markEventAsExecuted(eventId, title);
         
-        executeTrade(tradeDetails.symbol, tradeDetails.action, tradeDetails.quantity);
+        // Execute based on trade type (single vs multiple)
+        if (tradeDetails.isMultiTrade) {
+          executeMultiTrade(tradeDetails.tradesText, eventId, title);
+        } else {
+          executeTrade(tradeDetails.symbol, tradeDetails.action, tradeDetails.quantity, eventId, title);
+        }
       }
     });
     

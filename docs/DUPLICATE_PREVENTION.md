@@ -76,7 +76,7 @@ testBuyBYD()              // Test a single trade
 
 ### **Create Test Event:**
 1. **Create calendar event**: "TEST BUY 1 BYD" 
-2. **Set duration**: 2 minutes (not 30 minutes)
+2. **Set any duration**: The event can be any length (2 minutes, 30 minutes, 2 hours) - it will only execute once
 3. **Monitor execution**: Should execute only ONCE
 4. **Check logs**: Should see "Skipping already executed event" on subsequent checks
 
